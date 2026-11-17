@@ -1,27 +1,29 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMapsLibrary } from "@vis.gl/react-google-maps";
 import { Check, Loader2, MapPin, X } from "lucide-react";
 import { cn } from "cn";
+import { ApiError } from "@/lib/api/client";
 import { calculators } from "@/lib/api/services";
 import type { Location } from "../types";
 
-type Suggestion = { id: string; main: string; secondary?: string; zip?: string };
+type Suggestion = { id: string; main: string; secondary?: string; zip?: string; prediction?: google.maps.places.PlacePrediction };
 
 const NYC_BOROUGHS = ["Brooklyn", "Manhattan", "The Bronx", "Bronx", "Queens", "Staten Island"];
 
-function toLocation(place: google.maps.places.PlaceResult): Location {
-  const loc: Location = { address: place.formatted_address };
-  for (const c of place.address_components ?? []) {
+/** Places API (New) → our Location shape. */
+function toLocation(place: google.maps.places.Place): Location {
+  const loc: Location = { address: place.formattedAddress ?? undefined };
+  for (const c of place.addressComponents ?? []) {
     const t = c.types[0];
-    if (t === "administrative_area_level_1") loc.state = c.short_name;
-    else if (t === "locality") loc.city = c.short_name;
-    else if (t === "sublocality_level_1" && !loc.city && NYC_BOROUGHS.includes(c.long_name)) loc.city = "New York";
-    else if (t === "postal_code") loc.postal = c.short_name;
+    if (t === "administrative_area_level_1") loc.state = c.shortText ?? undefined;
+    else if (t === "locality") loc.city = c.shortText ?? undefined;
+    else if (t === "sublocality_level_1" && !loc.city && NYC_BOROUGHS.includes(c.longText ?? "")) loc.city = "New York";
+    else if (t === "postal_code") loc.postal = c.shortText ?? undefined;
   }
-  loc.lat = place.geometry?.location?.lat();
-  loc.lng = place.geometry?.location?.lng();
+  loc.lat = place.location?.lat();
+  loc.lng = place.location?.lng();
   return loc;
 }
 
@@ -44,15 +46,11 @@ export function LocationInput({
 }) {
   const id = useId();
   const places = useMapsLibrary("places");
-  const autocomplete = useMemo(() => (places ? new places.AutocompleteService() : null), [places]);
-  const details = useMemo(
-    () => (places ? new places.PlacesService(document.createElement("div")) : null),
-    [places],
-  );
   const session = useRef<google.maps.places.AutocompleteSessionToken | null>(null);
 
   const [text, setText] = useState(value.address ?? value.postal ?? "");
   const [items, setItems] = useState<Suggestion[]>([]);
+  const [searchedFor, setSearchedFor] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -61,36 +59,51 @@ export function LocationInput({
   const selected = value.lat != null || (!!value.postal && !value.address);
   const query = text.trim();
   const visible = open && !selected && query.length >= 2 ? items : [];
+  // Search finished for exactly this text and found nothing.
+  const noMatches = open && !selected && query.length >= 3 && searchedFor === query && items.length === 0;
 
   useEffect(() => {
     if (!open || selected || query.length < 2) return;
     const q = query;
+    let cancelled = false;
 
-    const handle = setTimeout(() => {
+    const handle = setTimeout(async () => {
       const zipItem: Suggestion[] = /^\d{5}$/.test(q) ? [{ id: `zip:${q}`, main: `ZIP ${q}`, secondary: "Use this ZIP code", zip: q }] : [];
-      if (!autocomplete || /^\d+$/.test(q)) return setItems(zipItem);
-
-      session.current ??= new google.maps.places.AutocompleteSessionToken();
-      autocomplete.getPlacePredictions(
-        {
+      if (!places || /^\d+$/.test(q)) {
+        if (!cancelled) {
+          setItems(zipItem);
+          setSearchedFor(q);
+        }
+        return;
+      }
+      try {
+        session.current ??= new places.AutocompleteSessionToken();
+        const { suggestions } = await places.AutocompleteSuggestion.fetchAutocompleteSuggestions({
           input: q,
-          componentRestrictions: { country: "us" },
-          types: citiesOnly ? ["(cities)"] : undefined,
+          includedRegionCodes: ["us"], // CDL only prices US lanes
+          includedPrimaryTypes: citiesOnly ? ["(cities)"] : undefined,
           sessionToken: session.current,
-        },
-        (preds) =>
-          setItems([
-            ...zipItem,
-            ...(preds ?? []).map((p) => ({
-              id: p.place_id,
-              main: p.structured_formatting.main_text,
-              secondary: p.structured_formatting.secondary_text,
-            })),
-          ]),
-      );
+        });
+        if (cancelled) return;
+        setItems([
+          ...zipItem,
+          ...suggestions
+            .map((s) => s.placePrediction)
+            .filter((p): p is google.maps.places.PlacePrediction => !!p)
+            .map((p) => ({ id: p.placeId, main: p.mainText?.text ?? p.text.text, secondary: p.secondaryText?.text, prediction: p })),
+        ]);
+      } catch (e) {
+        console.warn("Places autocomplete failed:", e instanceof Error ? e.message : e);
+        if (!cancelled) setItems(zipItem);
+      } finally {
+        if (!cancelled) setSearchedFor(q);
+      }
     }, 250);
-    return () => clearTimeout(handle);
-  }, [query, open, selected, autocomplete, citiesOnly]);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [query, open, selected, places, citiesOnly]);
 
   async function choose(s: Suggestion) {
     setOpen(false);
@@ -101,21 +114,21 @@ export function LocationInput({
         await calculators.verifyPostalCode(s.zip);
         setText(s.zip);
         onChange({ postal: s.zip });
-      } else if (details) {
-        const place = await new Promise<google.maps.places.PlaceResult>((resolve, reject) =>
-          details.getDetails(
-            { placeId: s.id, fields: ["address_components", "formatted_address", "geometry"], sessionToken: session.current ?? undefined },
-            (res, status) => (res && status === "OK" ? resolve(res) : reject(new Error(status))),
-          ),
-        );
+      } else if (s.prediction) {
+        // The session token from the suggestions request is passed along automatically.
+        const { place } = await s.prediction.toPlace().fetchFields({ fields: ["addressComponents", "formattedAddress", "location"] });
         session.current = null;
         const loc = toLocation(place);
         setText(loc.address ?? s.main);
         onChange(loc);
       }
     } catch (e) {
-      setError(s.zip ? "We don't serve that ZIP code yet." : "Couldn't load that place. Try another.");
-      if (e instanceof Error && !s.zip) console.warn("Places details failed:", e.message);
+      if (s.zip) {
+        setError(e instanceof ApiError && e.status >= 500 ? "We couldn't check that ZIP right now. Try again shortly." : "We don't serve that ZIP code yet.");
+      } else {
+        setError("Couldn't load that place. Try another.");
+        console.warn("Places details failed:", e instanceof Error ? e.message : e);
+      }
     } finally {
       setBusy(false);
     }
@@ -124,6 +137,7 @@ export function LocationInput({
   function clear() {
     setText("");
     setItems([]);
+    setSearchedFor("");
     setError(null);
     onChange({});
   }
@@ -189,6 +203,9 @@ export function LocationInput({
         )}
       </div>
       {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
+      {!error && noMatches && (
+        <p className="mt-1 text-xs text-muted-foreground">No US matches — we only quote US locations. Try a US city or a 5-digit ZIP.</p>
+      )}
 
       {visible.length > 0 && (
         <ul id={listId} role="listbox" className="absolute inset-x-0 top-full z-30 mt-1 overflow-hidden rounded-xl border bg-popover p-1 shadow-xl">
