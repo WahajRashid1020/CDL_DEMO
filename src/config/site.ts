@@ -7,6 +7,7 @@ export const siteConfig = {
   contact: {
     phone: "(872) 777-9899",
     email: "Solutions@cdl1000.com",
+    address: "212 W Superior, Unit 204, Chicago, IL 60654",
   },
   links: {
     careers: "https://jobs.lever.co/cdl1000",

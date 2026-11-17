@@ -66,7 +66,7 @@ export function SignupForm() {
     <form onSubmit={form.handleSubmit((v) => register.mutate(v))} noValidate className="space-y-5">
       <div>
         <h1 className="text-3xl font-extrabold">Join as a carrier</h1>
-        <p className="mt-2 text-muted-foreground">Tell us about your company. We&apos;ll verify your MC and US DOT numbers and get you on loads.</p>
+        <p className="mt-2 text-muted-foreground">Sign up for free, book the loads you want and get paid. Tell us about your company to get started.</p>
       </div>
 
       {register.error && (

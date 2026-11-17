@@ -59,9 +59,23 @@ src/lib/               env, api, auth, validation
   "my quotes" endpoint. Status updates when a quote is booked, paid or a call is requested.
 - The old login's `nuance_data` (Nuance chat) isn't carried over.
 
+## Content pages
+
+- Marketing pages (`shippers`, `carriers`, `truckload`, `drayage`, `daas`, `agency`, `technology`) use the copy from the
+  old site and shared blocks in `src/components/marketing/`. The old image bucket (`storage.googleapis.com/cdl_website_assets`)
+  now returns 403, so visuals are icon/gradient panels (`Visual`) instead of photos.
+- `careers` lists the 16 roles from the old site (`src/content/jobs.json`) — the Lever board no longer exists.
+  "Apply for this role" pre-fills `/apply?position=…`.
+- `contact` and `apply` post to the blogs service through the proxy; their bodies are validated server-side
+  (`schema` in `src/lib/api/allowlist.ts`), including a 5 MB résumé limit.
+- `blog` and `blog/[slug]` fetch at request time through `'use cache'` helpers (`src/features/blog/api.ts`); post HTML is
+  sanitised on the server. If the service is down, a friendly empty state shows and nothing broken is cached.
+  The home page's "CDL in the news" section hides itself in that case.
+- Legal pages render `src/content/legal/*.json`, generated from the old JSX — see the README there.
+
 ## Status
 
-Done: scaffold, quote wizard, login / sign-up / dashboard. Next: blog, careers, contact, apply, legal pages, polish.
+Done: scaffold, quote wizard, login / sign-up / dashboard, all content pages. Next: polish (OG image, sitemap, analytics).
 
-Known external blockers: the CDL test services return 500/503, and the Google Maps key's project has billing
-disabled (`BillingNotEnabledMapError`), so Places autocomplete fails — ZIP codes still work.
+Known external blockers: the CDL test services return 500/503, the Google Maps key's project has billing disabled
+(`BillingNotEnabledMapError`) so Places autocomplete fails (ZIP codes still work), and the old image bucket is private.
